@@ -1,0 +1,2 @@
+# Core Audio dependency for Qwen3-TTS
+brew "sox"
