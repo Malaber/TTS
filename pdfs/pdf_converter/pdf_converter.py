@@ -68,7 +68,7 @@ def main():
     model = Qwen3TTSModel.from_pretrained(
         args.model,
         device_map="auto",
-        torch_dtype=torch.float16
+        dtype=torch.float16  # Changed from torch_dtype
     )
 
     # --- Step 3: Generate Audio ---
