@@ -1,18 +1,23 @@
-ARG BASE=nvidia/cuda:11.8.0-base-ubuntu22.04
-FROM ${BASE}
+# Use a native ARM64 Python base instead of NVIDIA/CUDA
+FROM python:3.10-slim
 
-RUN apt-get update && apt-get upgrade -y
-RUN apt-get install -y --no-install-recommends gcc g++ make python3 python3-dev python3-pip python3-venv python3-wheel espeak-ng libsndfile1-dev && rm -rf /var/lib/apt/lists/*
-RUN pip3 install llvmlite --ignore-installed
+# Install system dependencies
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+    gcc g++ make python3-dev espeak-ng libsndfile1-dev ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Dependencies:
-RUN pip3 install torch torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
-RUN rm -rf /root/.cache/pip
+# Fix the VersionConflict error by upgrading build tools immediately
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Copy TTS repository contents:
-WORKDIR /root
-COPY . /root
+# Install PyTorch (CPU version for Mac architecture)
+RUN pip install --no-cache-dir torch torchaudio
 
+# Copy TTS repository contents
+WORKDIR /app
+COPY . /app
+
+# Install TTS
 RUN make install
 
 ENTRYPOINT ["tts"]
