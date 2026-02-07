@@ -1,8 +1,11 @@
 import argparse
 import sys
+import io  # Added for binary stream handling
 from pathlib import Path
 import requests
 import re
+import numpy as np  # Added for concatenation
+import soundfile as sf  # Added for audio decoding
 from tqdm import tqdm
 
 # Logic imports
@@ -77,7 +80,8 @@ def main():
 
     print(f"🎙️  Sending {len(chunks)} large chunks to TTS server (Max {args.max_chars} chars each)...")
 
-    all_audio_content = []
+    all_audio_segments = []
+    final_sr = None
 
     try:
         for chunk_text in tqdm(chunks, desc="Synthesizing"):
@@ -90,14 +94,17 @@ def main():
             response = requests.get(args.url, params=payload, timeout=300)
 
             if response.status_code == 200:
-                all_audio_content.append(response.content)
+                # Decode the binary WAV response into a NumPy array
+                data, sr = sf.read(io.BytesIO(response.content))
+                all_audio_segments.append(data)
+                final_sr = sr
             else:
                 print(f"\n⚠️ Error {response.status_code} on chunk starting with: {chunk_text[:50]}...")
 
-        if all_audio_content:
-            with open(audio_output, "wb") as f:
-                for audio_data in all_audio_content:
-                    f.write(audio_data)
+        if all_audio_segments:
+            # Stitch all segments into one array (this works now because they are NumPy arrays, not bytes)
+            combined_audio = np.concatenate(all_audio_segments)
+            sf.write(audio_output, combined_audio, final_sr)
             print(f"✨ Success! Audio saved to: {audio_output}")
         else:
             print("❌ No audio generated.")
