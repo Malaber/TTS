@@ -26,6 +26,8 @@ def clean_markdown_for_tts(text):
     text = re.sub(r'[-*_]{3,}', '', text)
     # Remove HTML image comments
     text = text.replace("<!-- image -->", "")
+    # Remove unknown chars
+    text = text.replace("/uniF6B7", "")
     return text.strip()
 
 
