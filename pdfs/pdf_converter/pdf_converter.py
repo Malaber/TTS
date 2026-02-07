@@ -5,7 +5,7 @@ import torch
 import soundfile as sf
 from tqdm import tqdm
 import re
-import numpy as np  # Added for audio concatenation
+import numpy as np
 
 # Logic imports
 from docling.document_converter import DocumentConverter
@@ -28,9 +28,10 @@ def clean_markdown_for_tts(text):
 def main():
     parser = argparse.ArgumentParser(description="PDF to Speech Pipeline with Caching")
     parser.add_argument("input_file", help="Path to the PDF file")
-    parser.add_argument("--speaker", default="Lenn", help="Speaker: Lenn (DE), Serena (EN), Ryan (EN), etc.")
+    parser.add_argument("--speaker",
+                        default="Ein professioneller deutscher Sprecher mit einer warmen und deutlichen Stimme.",
+                        help="Voice description prompt (e.g. 'A deep male voice')")
     parser.add_argument("--model", default="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", help="Qwen3 model path")
-    # Added snippet argument
     parser.add_argument("--snippet", action="store_true", help="Only process the first 5 snippets for testing")
 
     args = parser.parse_args()
@@ -118,11 +119,12 @@ def main():
                 if args.snippet and processed_count >= 5:
                     break
 
-                # Generate audio for the sub-chunk
-                wavs, sr = model.generate_custom_voice(
+                # CHANGED: Swapped generate_custom_voice for generate_voice_design
+                # Parameter 'speaker' is replaced by 'instruct' (the voice description)
+                wavs, sr = model.generate_voice_design(
                     text=chunk,
-                    language="auto",
-                    speaker=args.speaker
+                    language="German",
+                    instruct=args.speaker
                 )
                 all_audio_segments.append(wavs[0])
                 final_sr = sr
