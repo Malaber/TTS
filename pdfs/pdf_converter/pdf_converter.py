@@ -74,7 +74,7 @@ def main():
     model = Qwen3TTSModel.from_pretrained(
         args.model,
         device_map="auto",
-        dtype=torch.float16
+        dtype=torch.bfloat16
     )
 
     # --- Step 3: Generate Audio (with Paragraph Chunking) ---
