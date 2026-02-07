@@ -28,8 +28,8 @@ def clean_markdown_for_tts(text):
 def main():
     parser = argparse.ArgumentParser(description="PDF to Speech Pipeline with Caching")
     parser.add_argument("input_file", help="Path to the PDF file")
-    parser.add_argument("--speaker", default="Serena", help="Speaker: Vivian, Serena, Ryan, etc.")
-    parser.add_argument("--model", default="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", help="Qwen3 model path")
+    parser.add_argument("--speaker", default="Lenn", help="Speaker: Lenn (DE), Serena (EN), Ryan (EN), etc.")
+    parser.add_argument("--model", default="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", help="Qwen3 model path")
     # Added snippet argument
     parser.add_argument("--snippet", action="store_true", help="Only process the first 5 snippets for testing")
 
