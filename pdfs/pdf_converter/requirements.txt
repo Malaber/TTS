@@ -3,4 +3,3 @@ qwen-tts
 soundfile
 tqdm
 torch
-flash-attn
