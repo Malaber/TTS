@@ -39,7 +39,7 @@ def main():
 
     # Adjust output name if in snippet mode
     suffix = "-snippet.wav" if args.snippet else ".wav"
-    audio_output = input_path.with_suffix(suffix)
+    audio_output = input_path.parent / (input_path.stem + suffix)
 
     # --- Step 1: Text Extraction (with Cache Check) ---
     if md_path.exists():
