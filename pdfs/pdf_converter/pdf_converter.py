@@ -1,7 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
-from docling.converter import DocumentConverter
+from docling.document_converter import DocumentConverter
 
 
 def main():
