@@ -73,7 +73,7 @@ def main():
         chunks.append(current_chunk.strip())
 
     if args.snippet:
-        chunks = chunks[:15]
+        chunks = chunks[:3]
 
     print(f"🎙️  Sending {len(chunks)} large chunks to TTS server (Max {args.max_chars} chars each)...")
 
