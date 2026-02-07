@@ -35,13 +35,13 @@ def main():
     parser.add_argument("--url", default="http://localhost:5002/api/tts", help="Coqui TTS API URL")
     parser.add_argument("--language", default="de", help="Language code (de, en, etc.)")
     parser.add_argument("--max_chars", type=int, default=500, help="Wait for this many chars before chunking")
-    parser.add_argument("--snippet", action="store_true", help="Only process the first chunk")
+    parser.add_argument("--snippet", type=int, nargs='?', const=3, help="Only process the first N chunks (default: 3)")
 
     args = parser.parse_args()
     input_path = Path(args.input_file)
     md_path = input_path.with_suffix(".md")
 
-    suffix = "-snippet.wav" if args.snippet else ".wav"
+    suffix = "-snippet.wav" if args.snippet is not None else ".wav"
     audio_output = input_path.parent / (input_path.stem + suffix)
 
     # --- Step 1: Text Extraction ---
@@ -75,8 +75,8 @@ def main():
     if current_chunk:
         chunks.append(current_chunk.strip())
 
-    if args.snippet:
-        chunks = chunks[:3]
+    if args.snippet is not None:
+        chunks = chunks[:args.snippet]
 
     print(f"🎙️  Sending {len(chunks)} large chunks to TTS server (Max {args.max_chars} chars each)...")
 
