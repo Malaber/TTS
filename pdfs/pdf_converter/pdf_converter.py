@@ -21,21 +21,23 @@ def clean_markdown_for_tts(text):
     text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
     # Remove horizontal rules
     text = re.sub(r'[-*_]{3,}', '', text)
+    # Remove HTML image comments
+    text = text.replace("<!-- image -->", "")
     return text.strip()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PDF to Speech Pipeline (Single Speaker)")
+    parser = argparse.ArgumentParser(description="PDF to Speech Pipeline (Buffered Chunks)")
     parser.add_argument("input_file", help="Path to the PDF file")
     parser.add_argument("--url", default="http://localhost:5002/api/tts", help="Coqui TTS API URL")
     parser.add_argument("--language", default="de", help="Language code (de, en, etc.)")
-    parser.add_argument("--snippet", action="store_true", help="Only process the first 5 chunks")
+    parser.add_argument("--max_chars", type=int, default=500, help="Wait for this many chars before chunking")
+    parser.add_argument("--snippet", action="store_true", help="Only process the first chunk")
 
     args = parser.parse_args()
     input_path = Path(args.input_file)
     md_path = input_path.with_suffix(".md")
 
-    # Audio output setup
     suffix = "-snippet.wav" if args.snippet else ".wav"
     audio_output = input_path.parent / (input_path.stem + suffix)
 
@@ -46,53 +48,59 @@ def main():
             raw_text = f.read()
     else:
         print(f"🔍 Extracting PDF text...")
-        try:
-            doc_converter = DocumentConverter()
-            doc_result = doc_converter.convert(str(input_path))
-            raw_text = doc_result.document.export_to_markdown()
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(raw_text)
-        except Exception as e:
-            print(f"Extraction failed: {e}")
-            sys.exit(1)
+        doc_converter = DocumentConverter()
+        doc_result = doc_converter.convert(str(input_path))
+        raw_text = doc_result.document.export_to_markdown()
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(raw_text)
 
     text_to_read = clean_markdown_for_tts(raw_text)
 
-    # --- Step 2: Chunking Logic ---
+    # --- Step 2: Buffered Chunking Logic ---
     paragraphs = [p.strip() for p in text_to_read.split('\n\n') if p.strip()]
-    if args.snippet:
-        paragraphs = paragraphs[:5]
 
-    print(f"🎙️  Sending {len(paragraphs)} chunks to TTS server at {args.url}...")
+    chunks = []
+    current_chunk = ""
+
+    for p in paragraphs:
+        if len(current_chunk) + len(p) < args.max_chars:
+            current_chunk += p + "\n\n"
+        else:
+            chunks.append(current_chunk.strip())
+            current_chunk = p + "\n\n"
+
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+
+    if args.snippet:
+        chunks = chunks[:15]
+
+    print(f"🎙️  Sending {len(chunks)} large chunks to TTS server (Max {args.max_chars} chars each)...")
 
     all_audio_content = []
 
     try:
-        for para in tqdm(paragraphs, desc="Synthesizing"):
-            # Payload without speaker_id for single-speaker models
+        for chunk_text in tqdm(chunks, desc="Synthesizing"):
             payload = {
-                'text': para,
+                'text': chunk_text,
                 'language_id': args.language
             }
 
-            # API Request
-            response = requests.get(args.url, params=payload)
+            # Use a longer timeout because 10k chars takes time to process on CPU
+            response = requests.get(args.url, params=payload, timeout=300)
 
             if response.status_code == 200:
                 all_audio_content.append(response.content)
             else:
-                print(f"\n⚠️ Error on chunk: {response.status_code}")
-                # Log a snippet of the text that failed to help debug
-                print(f"   Failed text: {para[:50]}...")
+                print(f"\n⚠️ Error {response.status_code} on chunk starting with: {chunk_text[:50]}...")
 
         if all_audio_content:
-            # Concatenate binary WAV chunks
             with open(audio_output, "wb") as f:
-                for chunk in all_audio_content:
-                    f.write(chunk)
+                for audio_data in all_audio_content:
+                    f.write(audio_data)
             print(f"✨ Success! Audio saved to: {audio_output}")
         else:
-            print("❌ No audio was generated.")
+            print("❌ No audio generated.")
 
     except Exception as e:
         print(f"Pipeline failed: {e}")
