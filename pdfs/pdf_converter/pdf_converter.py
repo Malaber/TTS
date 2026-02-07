@@ -30,11 +30,16 @@ def main():
     parser.add_argument("input_file", help="Path to the PDF file")
     parser.add_argument("--speaker", default="Serena", help="Speaker: Vivian, Serena, Ryan, etc.")
     parser.add_argument("--model", default="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", help="Qwen3 model path")
+    # Added snippet argument
+    parser.add_argument("--snippet", action="store_true", help="Only process the first 5 snippets for testing")
 
     args = parser.parse_args()
     input_path = Path(args.input_file)
     md_path = input_path.with_suffix(".md")
-    audio_output = input_path.with_suffix(".wav")
+
+    # Adjust output name if in snippet mode
+    suffix = "-snippet.wav" if args.snippet else ".wav"
+    audio_output = input_path.with_suffix(suffix)
 
     # --- Step 1: Text Extraction (with Cache Check) ---
     if md_path.exists():
@@ -80,10 +85,15 @@ def main():
 
     all_audio_segments = []
     final_sr = None
+    processed_count = 0
 
     try:
         # Loop through paragraphs with a progress bar
-        for i, para in enumerate(tqdm(paragraphs, desc="Synthesizing paragraphs")):
+        for i, para in enumerate(tqdm(paragraphs, desc="Synthesizing")):
+
+            # Check if we should stop early in snippet mode
+            if args.snippet and processed_count >= 5:
+                break
 
             # --- SUB-CHUNKING LOGIC ---
             # If a paragraph is very long, the GPU slows down exponentially.
@@ -105,6 +115,8 @@ def main():
 
             for chunk in sub_chunks:
                 if not chunk: continue
+                if args.snippet and processed_count >= 5:
+                    break
 
                 # Generate audio for the sub-chunk
                 wavs, sr = model.generate_custom_voice(
@@ -114,6 +126,7 @@ def main():
                 )
                 all_audio_segments.append(wavs[0])
                 final_sr = sr
+                processed_count += 1
 
         if all_audio_segments:
             # Stitch all segments into one array
