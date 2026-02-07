@@ -86,16 +86,12 @@ def main():
 
     all_audio_segments = []
     final_sr = None
-    processed_count = 0
 
     try:
         # Loop through paragraphs with a progress bar
+        if args.snippet:
+            paragraphs = paragraphs[:5]
         for i, para in enumerate(tqdm(paragraphs, desc="Synthesizing")):
-
-            # Check if we should stop early in snippet mode
-            if args.snippet and processed_count >= 5:
-                break
-
             # --- SUB-CHUNKING LOGIC ---
             # If a paragraph is very long, the GPU slows down exponentially.
             # We split long paragraphs into sub-chunks (approx 450 chars) to maintain speed.
@@ -128,7 +124,6 @@ def main():
                 )
                 all_audio_segments.append(wavs[0])
                 final_sr = sr
-                processed_count += 1
 
         if all_audio_segments:
             # Stitch all segments into one array
