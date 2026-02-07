@@ -5,6 +5,7 @@ import torch
 import soundfile as sf
 from tqdm import tqdm
 import re
+import numpy as np  # Added for audio concatenation
 
 # Logic imports
 from docling.document_converter import DocumentConverter
@@ -68,20 +69,40 @@ def main():
     model = Qwen3TTSModel.from_pretrained(
         args.model,
         device_map="auto",
-        dtype=torch.float16  # Changed from torch_dtype
+        dtype=torch.bfloat16
     )
 
-    # --- Step 3: Generate Audio ---
+    # --- Step 3: Generate Audio (with Paragraph Chunking) ---
     print(f"🎙️  Generating speech for {audio_output.name}...")
-    try:
-        wavs, sr = model.generate_custom_voice(
-            text=text_to_read,
-            language="auto",
-            speaker=args.speaker
-        )
 
-        sf.write(audio_output, wavs[0], sr)
-        print(f"✨ Success! Audio saved to: {audio_output}")
+    # Split text into paragraphs based on double newlines
+    paragraphs = [p.strip() for p in text_to_read.split('\n\n') if p.strip()]
+
+    all_audio_segments = []
+    final_sr = None
+
+    try:
+        # Loop through paragraphs with a progress bar
+        for i, para in enumerate(tqdm(paragraphs, desc="Synthesizing paragraphs")):
+            # # Optional: Cap very long paragraphs at 1500 chars to be safe
+            # if len(para) > 1500:
+            #     para = para[:1500]
+
+            wavs, sr = model.generate_custom_voice(
+                text=para,
+                language="auto",
+                speaker=args.speaker
+            )
+            all_audio_segments.append(wavs[0])
+            final_sr = sr
+
+        if all_audio_segments:
+            # Stitch all segments into one array
+            combined_audio = np.concatenate(all_audio_segments)
+            sf.write(audio_output, combined_audio, final_sr)
+            print(f"✨ Success! Audio saved to: {audio_output}")
+        else:
+            print("⚠️ No text chunks were found to process.")
 
     except Exception as e:
         print(f"TTS generation failed: {e}")
