@@ -103,14 +103,15 @@ def main():
     else:
         print(f"🌐 Using API at {args.url}...")
 
-    # --- Step 4: Synthesis Loop (Memory Optimized) ---
+    # --- Step 4: Synthesis Loop (Memory & Disk Optimized) ---
     print(f"🎙️ Starting synthesis. Mode: {args.mode}")
 
-    # We will write to the file incrementally to save RAM
     first_chunk = True
+    output_file = None  # We'll hold the file handle here
 
     try:
-        for chunk_text in tqdm(chunks, desc="Synthesizing"):
+        for chunk_text in tqdm(chunks, desc=f"Synthesizing ({args.mode})"):
+            # --- 1. Generation Logic ---
             if args.mode == "api":
                 payload = {'text': chunk_text, 'language_id': 'de'}
                 response = requests.get(args.url, params=payload, timeout=300)
@@ -127,27 +128,31 @@ def main():
                 )
                 data = wavs[0]
 
-            # --- THE RAM FIX ---
-            # 1. Write the chunk immediately to the disk
-            # 'x' mode creates the file, 'a' mode appends to it (only works for RAW, so we use sf.SoundFile)
-            mode = 'w' if first_chunk else 'r+'
-            with sf.SoundFile(audio_output, mode=mode, samplerate=sr, channels=1) as f:
-                if not first_chunk:
-                    f.seek(0, sf.SEEK_END)
-                f.write(data)
+            # --- 2. Disk Logic (The Fix) ---
+            if first_chunk:
+                # On the first chunk, create the file and define the format
+                output_file = sf.SoundFile(audio_output, mode='w', samplerate=sr,
+                                           channels=1, subtype='PCM_16')
+                output_file.write(data)
+                first_chunk = False
+            else:
+                # On later chunks, just write data (metadata is already set)
+                output_file.write(data)
 
-            # 2. Clear references to large arrays immediately
+            # --- 3. RAM Cleanup ---
             del data
-            if args.mode == "local":
-                # 3. Force PyTorch to release MPS memory back to the system
+            if args.mode == "local" and torch.backends.mps.is_available():
                 torch.mps.empty_cache()
 
-            first_chunk = False
-
-        print(f"✨ Success! Audio saved directly to: {audio_output}")
+        # Close the file properly at the very end to finalize the WAV header
+        if output_file:
+            output_file.close()
+            print(f"✨ Success! Audio saved to: {audio_output}")
 
     except Exception as e:
+        if output_file: output_file.close()
         print(f"Pipeline failed: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
