@@ -103,45 +103,51 @@ def main():
     else:
         print(f"🌐 Using API at {args.url}...")
 
-    # --- Step 4: Synthesis Loop ---
-    all_audio_segments = []
-    final_sr = None
+    # --- Step 4: Synthesis Loop (Memory Optimized) ---
+    print(f"🎙️ Starting synthesis. Mode: {args.mode}")
+
+    # We will write to the file incrementally to save RAM
+    first_chunk = True
 
     try:
-        for chunk_text in tqdm(chunks, desc=f"Synthesizing ({args.mode})"):
+        for chunk_text in tqdm(chunks, desc="Synthesizing"):
             if args.mode == "api":
-                # --- API MODE ---
                 payload = {'text': chunk_text, 'language_id': 'de'}
                 response = requests.get(args.url, params=payload, timeout=300)
                 if response.status_code == 200:
                     data, sr = sf.read(io.BytesIO(response.content))
-                    all_audio_segments.append(data)
-                    final_sr = sr
                 else:
-                    print(f"\n⚠️ API Error {response.status_code}")
-
+                    continue
             else:
-                # --- LOCAL MODE ---
-                # Using the Base model cloning for absolute consistency
                 wavs, sr = model.generate_voice_clone(
                     text=chunk_text,
                     language=args.language,
                     ref_audio=args.ref_audio,
                     ref_text=args.ref_text
                 )
-                all_audio_segments.append(wavs[0])
-                final_sr = sr
+                data = wavs[0]
 
-        if all_audio_segments:
-            combined_audio = np.concatenate(all_audio_segments)
-            sf.write(audio_output, combined_audio, final_sr)
-            print(f"✨ Success! Audio saved to: {audio_output}")
-        else:
-            print("❌ No audio generated.")
+            # --- THE RAM FIX ---
+            # 1. Write the chunk immediately to the disk
+            # 'x' mode creates the file, 'a' mode appends to it (only works for RAW, so we use sf.SoundFile)
+            mode = 'w' if first_chunk else 'r+'
+            with sf.SoundFile(audio_output, mode=mode, samplerate=sr, channels=1) as f:
+                if not first_chunk:
+                    f.seek(0, sf.SEEK_END)
+                f.write(data)
+
+            # 2. Clear references to large arrays immediately
+            del data
+            if args.mode == "local":
+                # 3. Force PyTorch to release MPS memory back to the system
+                torch.mps.empty_cache()
+
+            first_chunk = False
+
+        print(f"✨ Success! Audio saved directly to: {audio_output}")
 
     except Exception as e:
         print(f"Pipeline failed: {e}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":
