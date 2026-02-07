@@ -65,11 +65,11 @@ def main():
 
     # --- Step 2: Initialize TTS ---
     print(f"🚀 Loading TTS Model...")
-    # Optimized for Mac: float16 is faster on Metal (MPS)
+    # Optimized for Mac: float16 is faster on Metal (MPS) than bfloat16
     model = Qwen3TTSModel.from_pretrained(
         args.model,
         device_map="auto",
-        dtype=torch.bfloat16
+        dtype=torch.float16
     )
 
     # --- Step 3: Generate Audio (with Paragraph Chunking) ---
@@ -84,17 +84,36 @@ def main():
     try:
         # Loop through paragraphs with a progress bar
         for i, para in enumerate(tqdm(paragraphs, desc="Synthesizing paragraphs")):
-            # # Optional: Cap very long paragraphs at 1500 chars to be safe
-            # if len(para) > 1500:
-            #     para = para[:1500]
 
-            wavs, sr = model.generate_custom_voice(
-                text=para,
-                language="auto",
-                speaker=args.speaker
-            )
-            all_audio_segments.append(wavs[0])
-            final_sr = sr
+            # --- SUB-CHUNKING LOGIC ---
+            # If a paragraph is very long, the GPU slows down exponentially.
+            # We split long paragraphs into sub-chunks (approx 450 chars) to maintain speed.
+            sub_chunks = []
+            if len(para) > 500:
+                # Split by sentence-ending punctuation to keep it natural
+                sentences = re.split(r'(?<=[.!?])\s+', para)
+                current_chunk = ""
+                for s in sentences:
+                    if len(current_chunk) + len(s) < 450:
+                        current_chunk += " " + s
+                    else:
+                        sub_chunks.append(current_chunk.strip())
+                        current_chunk = s
+                sub_chunks.append(current_chunk.strip())
+            else:
+                sub_chunks = [para]
+
+            for chunk in sub_chunks:
+                if not chunk: continue
+
+                # Generate audio for the sub-chunk
+                wavs, sr = model.generate_custom_voice(
+                    text=chunk,
+                    language="auto",
+                    speaker=args.speaker
+                )
+                all_audio_segments.append(wavs[0])
+                final_sr = sr
 
         if all_audio_segments:
             # Stitch all segments into one array
