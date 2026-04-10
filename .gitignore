@@ -172,3 +172,4 @@ local_scripts/*
 coqui_demos/*
 /pdfs/*.pdf
 /pdfs/*.md
+/pdfs/done/
