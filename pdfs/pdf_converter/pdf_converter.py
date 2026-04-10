@@ -4,6 +4,7 @@ import io
 import re
 import gc
 import os
+import hashlib
 from pathlib import Path
 
 import torch
@@ -147,16 +148,21 @@ def main():
     else:
         print(f"🌐 Using API at {args.url}...")
 
-    # --- Step 4: Synthesis Loop (Memory & Disk Optimized) ---
+    # --- Step 4: Synthesis Loop (Resumable + Memory Optimized) ---
     print(f"🎙️ Starting synthesis. Mode: {args.mode}")
+
+    # Create a dedicated cache directory for this specific PDF
+    cache_dir = input_path.parent / f"{input_path.stem}_audio_cache"
+    cache_dir.mkdir(exist_ok=True)
+    print(f"📁 Using cache directory: {cache_dir}")
 
     first_chunk = True
     output_file = None
 
     try:
         pbar = tqdm(chunks, desc=f"Synthesizing ({args.mode})")
-        for chunk_text in pbar:
-            # --- 0. Memory Monitoring (Optional) ---
+        for i, chunk_text in enumerate(pbar):
+            # --- 0. Memory Monitoring ---
             if psutil:
                 ram_gb = psutil.Process().memory_info().rss / (1024 ** 3)
                 stats = {"RAM": f"{ram_gb:.1f}GB"}
@@ -165,42 +171,59 @@ def main():
                     stats["MPS"] = f"{mps_gb:.1f}GB"
                 pbar.set_postfix(stats)
 
-            # --- 1. Generation Logic ---
-            if args.mode == "api":
-                payload = {'text': chunk_text, 'language_id': 'de'}
-                response = requests.get(args.url, params=payload, timeout=300)
-                if response.status_code == 200:
-                    data, sr = sf.read(io.BytesIO(response.content))
-                else:
-                    continue
-            else:
-                # 🛑 CRITICAL FIX: Tell PyTorch NOT to track gradients/memory history!
-                with torch.inference_mode():
-                    wavs, sr = model.generate_voice_clone(
-                        text=chunk_text,
-                        language=args.language,
-                        ref_audio=args.ref_audio,
-                        ref_text=args.ref_text
-                    )
-                
-                # Detach from any residual graphs and convert to CPU/Numpy immediately
-                if isinstance(wavs[0], torch.Tensor):
-                    data = wavs[0].detach().cpu().numpy()
-                else:
-                    data = wavs[0]
+            # Create a unique MD5 hash for this exact text snippet
+            text_hash = hashlib.md5(chunk_text.encode('utf-8')).hexdigest()
+            # We include the index (i:04d) so the files sort alphabetically
+            chunk_file_path = cache_dir / f"chunk_{i:04d}_{text_hash}.wav"
 
-            # --- 2. Disk Logic ---
+            # --- 1. Generation or Cache Loading ---
+            if chunk_file_path.exists():
+                # ♻️ CACHE HIT: Load the existing audio from disk
+                data, sr = sf.read(chunk_file_path)
+            else:
+                # ⚙️ CACHE MISS: Generate the audio
+                if args.mode == "api":
+                    payload = {'text': chunk_text, 'language_id': 'de'}
+                    response = requests.get(args.url, params=payload, timeout=300)
+                    if response.status_code == 200:
+                        data, sr = sf.read(io.BytesIO(response.content))
+                    else:
+                        print(f"\nAPI Error on chunk {i}. Skipping...")
+                        continue
+                else:
+                    # 🛑 CRITICAL FIX: Tell PyTorch NOT to track gradients/memory history!
+                    with torch.inference_mode():
+                        wavs, sr = model.generate_voice_clone(
+                            text=chunk_text,
+                            language=args.language,
+                            ref_audio=args.ref_audio,
+                            ref_text=args.ref_text
+                        )
+                    
+                    # Detach from any residual graphs and convert to CPU/Numpy immediately
+                    if isinstance(wavs[0], torch.Tensor):
+                        data = wavs[0].detach().cpu().numpy()
+                    else:
+                        data = wavs[0]
+                
+                # Save this newly generated snippet to the cache for future runs
+                sf.write(chunk_file_path, data, sr)
+
+            # --- 2. Stream to Final Master File ---
             if first_chunk:
+                # On the first chunk, create the file and define the format
                 output_file = sf.SoundFile(audio_output, mode='w', samplerate=sr,
                                            channels=1, subtype='PCM_16')
                 output_file.write(data)
                 first_chunk = False
             else:
+                # On later chunks, just write data (metadata is already set)
                 output_file.write(data)
 
             # --- 3. AGGRESSIVE RAM Cleanup ---
             # Delete EVERYTHING heavy from this specific loop iteration
-            if args.mode == "local":
+            if args.mode == "local" and not chunk_file_path.exists():
+                # Only need to delete wavs if we actually generated them locally this loop
                 del wavs
             del data
             
@@ -213,11 +236,13 @@ def main():
 
         if output_file:
             output_file.close()
-            print(f"✨ Success! Audio saved to: {audio_output}")
+            print(f"✨ Success! Master audio saved to: {audio_output}")
+            print(f"💾 Individual snippets preserved in: {cache_dir}")
 
     except Exception as e:
         if output_file: output_file.close()
-        print(f"Pipeline failed: {e}")
+        print(f"\nPipeline failed: {e}")
+        print("Don't worry, your progress is saved in the cache directory. Just run the script again!")
         sys.exit(1)
 
 
