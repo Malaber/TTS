@@ -111,7 +111,12 @@ def main():
         raw_text = doc_result.document.export_to_markdown()
         text_to_read = clean_markdown_for_tts(raw_text)
         with open(md_path, "w", encoding="utf-8") as f:
-            f.write(text_to_read)
+            f.write(raw_text) # Save raw text for caching
+        
+        # 🗑️ KILL Docling immediately to free up baseline RAM
+        del doc_result
+        del doc_converter
+        gc.collect()
 
     # --- Step 2: Buffered Chunking ---
     paragraphs = [p.strip() for p in text_to_read.split('\n\n') if p.strip()]
@@ -164,11 +169,13 @@ def main():
         for i, chunk_text in enumerate(pbar):
             # --- 0. Memory Monitoring ---
             if psutil:
-                ram_gb = psutil.Process().memory_info().rss / (1024 ** 3)
-                stats = {"RAM": f"{ram_gb:.1f}GB"}
+                # RSS (Resident Set Size) matches Activity Monitor's "Memory" column
+                total_rss_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+                stats = {"Total": f"{total_rss_gb:.1f}GB"}
                 if torch.backends.mps.is_available():
+                    # Only tracks current tensors
                     mps_gb = torch.mps.current_allocated_memory() / (1024 ** 3)
-                    stats["MPS"] = f"{mps_gb:.1f}GB"
+                    stats["MPS-Alloc"] = f"{mps_gb:.1f}GB"
                 pbar.set_postfix(stats)
 
             # Create a unique MD5 hash for this exact text snippet
@@ -201,10 +208,11 @@ def main():
                         )
                     
                     # Detach from any residual graphs and convert to CPU/Numpy immediately
+                    # We use copy=True to ensure we don't hold a "view" of any GPU tensors
                     if isinstance(wavs[0], torch.Tensor):
-                        data = wavs[0].detach().cpu().numpy()
+                        data = np.array(wavs[0].detach().cpu().numpy(), copy=True)
                     else:
-                        data = wavs[0]
+                        data = np.array(wavs[0], copy=True)
                 
                 # Save this newly generated snippet to the cache for future runs
                 sf.write(chunk_file_path, data, sr)
@@ -222,16 +230,24 @@ def main():
 
             # --- 3. AGGRESSIVE RAM Cleanup ---
             # Delete EVERYTHING heavy from this specific loop iteration
-            if args.mode == "local" and not chunk_file_path.exists():
-                # Only need to delete wavs if we actually generated them locally this loop
+            if 'wavs' in locals():
                 del wavs
-            del data
+            if 'data' in locals():
+                del data
+            
+            # 🛑 CRITICAL: If the model is keeping an internal context/history, clear it!
+            if hasattr(model, "reset_cache"):
+                model.reset_cache()
+            elif hasattr(model, "model") and hasattr(model.model, "reset_cache"):
+                model.model.reset_cache()
             
             # Force Python to destroy unreferenced objects NOW
             gc.collect()
             
             # NOW tell Apple Silicon to release that destroyed memory back to the OS
             if args.mode == "local" and torch.backends.mps.is_available():
+                # Synchronize ensures the GPU is actually DONE before we try to clear
+                torch.mps.synchronize()
                 torch.mps.empty_cache()
 
         if output_file:
