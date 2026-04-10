@@ -24,6 +24,8 @@ from docling.document_converter import DocumentConverter
 # Suppress "Setting `pad_token_id` to `eos_token_id`" warnings
 import logging
 logging.getLogger("transformers").setLevel(logging.ERROR)
+import transformers
+transformers.logging.set_verbosity_error()
 
 
 def clean_markdown_for_tts(text):
@@ -139,6 +141,9 @@ def main():
             torch_dtype=dtype,  # Optimized for Apple Silicon
             attn_implementation="sdpa"  # Enforce PyTorch native attention!
         )
+        # Suppress "Setting `pad_token_id` to `eos_token_id`" warning
+        if hasattr(model.model, "config"):
+            model.model.config.pad_token_id = model.model.config.eos_token_id
     else:
         print(f"🌐 Using API at {args.url}...")
 
@@ -149,7 +154,17 @@ def main():
     output_file = None
 
     try:
-        for chunk_text in tqdm(chunks, desc=f"Synthesizing ({args.mode})"):
+        pbar = tqdm(chunks, desc=f"Synthesizing ({args.mode})")
+        for chunk_text in pbar:
+            # --- 0. Memory Monitoring (Optional) ---
+            if psutil:
+                ram_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+                stats = {"RAM": f"{ram_gb:.1f}GB"}
+                if torch.backends.mps.is_available():
+                    mps_gb = torch.mps.current_allocated_memory() / (1024 ** 3)
+                    stats["MPS"] = f"{mps_gb:.1f}GB"
+                pbar.set_postfix(stats)
+
             # --- 1. Generation Logic ---
             if args.mode == "api":
                 payload = {'text': chunk_text, 'language_id': 'de'}
