@@ -13,12 +13,15 @@ from tqdm import tqdm
 # Logic imports
 from docling.document_converter import DocumentConverter
 
+import re
+
 
 def clean_markdown_for_tts(text):
-    """Strips Markdown and HTML comments for a smoother listening experience."""
-    # Fix: Actually remove HTML comments (like )
+    """Strips Markdown, HTML comments, and PDF artifacts for a smoother listening experience."""
+    # 1. Remove HTML comments
     text = re.sub(r'', '', text, flags=re.DOTALL)
-    # Remove Bold/Italic
+
+    # 2. Markdown formatting removal
     text = text.replace("**", "").replace("__", "").replace("*", "").replace("_", "")
     # Remove Header hashes
     text = re.sub(r'#+\s', '', text)
@@ -30,6 +33,27 @@ def clean_markdown_for_tts(text):
     text = text.replace("<!-- image -->", "")
     # Remove unknown chars
     text = text.replace("/uniF6B7", "")
+
+    # --- PDF Artifact Cleanup ---
+
+    text = text.replace("­ ", "")
+    text = text.replace("  ", " ")
+
+    # 3. Remove invisible soft hyphens (\xad)
+    text = text.replace('\xad', '')
+
+    # 4. Fix line-break hyphenation ("Lebensmittelzu- bereitung" -> "Lebensmittelzubereitung")
+    # Matches a word char, a hyphen, 1+ whitespace chars (including newlines), and a word char
+    text = re.sub(r'(\w+)-\s+(\w+)', r'\1\2', text)
+
+    # 5. Fix multiple horizontal spaces (justified text artifacts)
+    # Using [ \t]+ instead of \s+ so we don't destroy \n\n paragraph breaks!
+    text = re.sub(r'[ \t]+', ' ', text)
+
+    # 6. Fix hard-wrapped lines inside paragraphs
+    # Replaces single newlines with a space, but leaves double newlines (\n\n) alone
+    text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
+
     return text.strip()
 
 
