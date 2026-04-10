@@ -2,6 +2,8 @@ import argparse
 import sys
 import io
 import re
+import gc
+import os
 from pathlib import Path
 
 import torch
@@ -10,10 +12,18 @@ import numpy as np
 import soundfile as sf
 from tqdm import tqdm
 
+# Optional: for memory monitoring
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 # Logic imports
 from docling.document_converter import DocumentConverter
 
-import re
+# Suppress "Setting `pad_token_id` to `eos_token_id`" warnings
+import logging
+logging.getLogger("transformers").setLevel(logging.ERROR)
 
 
 def clean_markdown_for_tts(text):
@@ -136,7 +146,7 @@ def main():
     print(f"🎙️ Starting synthesis. Mode: {args.mode}")
 
     first_chunk = True
-    output_file = None  # We'll hold the file handle here
+    output_file = None
 
     try:
         for chunk_text in tqdm(chunks, desc=f"Synthesizing ({args.mode})"):
@@ -149,31 +159,43 @@ def main():
                 else:
                     continue
             else:
-                wavs, sr = model.generate_voice_clone(
-                    text=chunk_text,
-                    language=args.language,
-                    ref_audio=args.ref_audio,
-                    ref_text=args.ref_text
-                )
-                data = wavs[0]
+                # 🛑 CRITICAL FIX: Tell PyTorch NOT to track gradients/memory history!
+                with torch.inference_mode():
+                    wavs, sr = model.generate_voice_clone(
+                        text=chunk_text,
+                        language=args.language,
+                        ref_audio=args.ref_audio,
+                        ref_text=args.ref_text
+                    )
+                
+                # Detach from any residual graphs and convert to CPU/Numpy immediately
+                if isinstance(wavs[0], torch.Tensor):
+                    data = wavs[0].detach().cpu().numpy()
+                else:
+                    data = wavs[0]
 
-            # --- 2. Disk Logic (The Fix) ---
+            # --- 2. Disk Logic ---
             if first_chunk:
-                # On the first chunk, create the file and define the format
                 output_file = sf.SoundFile(audio_output, mode='w', samplerate=sr,
                                            channels=1, subtype='PCM_16')
                 output_file.write(data)
                 first_chunk = False
             else:
-                # On later chunks, just write data (metadata is already set)
                 output_file.write(data)
 
-            # --- 3. RAM Cleanup ---
+            # --- 3. AGGRESSIVE RAM Cleanup ---
+            # Delete EVERYTHING heavy from this specific loop iteration
+            if args.mode == "local":
+                del wavs
             del data
+            
+            # Force Python to destroy unreferenced objects NOW
+            gc.collect()
+            
+            # NOW tell Apple Silicon to release that destroyed memory back to the OS
             if args.mode == "local" and torch.backends.mps.is_available():
                 torch.mps.empty_cache()
 
-        # Close the file properly at the very end to finalize the WAV header
         if output_file:
             output_file.close()
             print(f"✨ Success! Audio saved to: {audio_output}")
