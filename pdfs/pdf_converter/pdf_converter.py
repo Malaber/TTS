@@ -90,15 +90,15 @@ def main():
         print(f"♻️  Found cached Markdown: {md_path.name}")
         with open(md_path, "r", encoding="utf-8") as f:
             raw_text = f.read()
+        text_to_read = clean_markdown_for_tts(raw_text)
     else:
         print(f"🔍 Extracting PDF text...")
         doc_converter = DocumentConverter()
         doc_result = doc_converter.convert(str(input_path))
         raw_text = doc_result.document.export_to_markdown()
+        text_to_read = clean_markdown_for_tts(raw_text)
         with open(md_path, "w", encoding="utf-8") as f:
-            f.write(raw_text)
-
-    text_to_read = clean_markdown_for_tts(raw_text)
+            f.write(text_to_read)
 
     # --- Step 2: Buffered Chunking ---
     paragraphs = [p.strip() for p in text_to_read.split('\n\n') if p.strip()]
