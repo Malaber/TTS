@@ -16,8 +16,8 @@ from docling.document_converter import DocumentConverter
 
 def clean_markdown_for_tts(text):
     """Strips Markdown and HTML comments for a smoother listening experience."""
-    # Remove HTML comments (like )
-    text = re.sub(r'', '', text)
+    # Fix: Actually remove HTML comments (like )
+    text = re.sub(r'', '', text, flags=re.DOTALL)
     # Remove Bold/Italic
     text = text.replace("**", "").replace("__", "").replace("*", "").replace("_", "")
     # Remove Header hashes
@@ -95,10 +95,15 @@ def main():
         from qwen_tts import Qwen3TTSModel
         device = "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"🚀 Loading Local Model on {device}...")
+
+        # Determine the best precision for the hardware
+        dtype = torch.float16 if device == "mps" else torch.bfloat16
+
         model = Qwen3TTSModel.from_pretrained(
             args.model,
             device_map={"": device},
-            torch_dtype=torch.bfloat16
+            torch_dtype=dtype,  # Optimized for Apple Silicon
+            attn_implementation="sdpa"  # Enforce PyTorch native attention!
         )
     else:
         print(f"🌐 Using API at {args.url}...")
