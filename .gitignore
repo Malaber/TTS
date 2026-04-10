@@ -171,9 +171,8 @@ coqui_recipes/*
 local_scripts/*
 coqui_demos/*
 /pdfs/*.pdf
-/pdfs/*.wav
 /pdfs/*.md
 /pdfs/done/
 /pdfs/pdf_converter/*.md
 /pdfs/pdf_converter/*.pdf
-/pdfs/pdf_converter/*.wav
+*.wav
