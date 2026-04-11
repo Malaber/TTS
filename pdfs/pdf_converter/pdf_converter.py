@@ -91,6 +91,7 @@ def main():
     parser.add_argument("--max_chars", type=int, default=500, help="Wait for this many chars before chunking")
     parser.add_argument("--snippet", type=int, nargs='?', const=3, help="Only process the first N chunks")
     parser.add_argument("--export-chunks", action="store_true", help="Save the chunks to a file and exit")
+    parser.add_argument("--legacy-until", type=int, default=0, help="Use old chunking logic for the first N chunks to preserve cache")
 
     args = parser.parse_args()
     input_path = Path(args.input_file)
@@ -170,27 +171,40 @@ def main():
     paragraphs = [p.strip() for p in text_to_read.split('\n\n') if p.strip()]
     chunks = []
     current_chunk = ""
+    
     for p in paragraphs:
-        # Correctly check if the COMBINED length fits the limit
-        combined_len = len(current_chunk) + len(p) + (2 if current_chunk else 0)
-        if combined_len <= args.max_chars:
-            current_chunk += ("\n\n" if current_chunk else "") + p
-        else:
-            # Flush the current buffer first
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-                current_chunk = ""
-            
-            # If the single paragraph itself is too large, split it sub-sectionally
-            if len(p) > args.max_chars:
-                sub_chunks = split_large_text(p, args.max_chars, ["\n", "SENTENCE"])
-                # Add all but the last sub-chunk directly
-                for sc in sub_chunks[:-1]:
-                    chunks.append(sc.strip())
-                # Keep the last sub-chunk in the buffer to potentially join with next paragraph
-                current_chunk = sub_chunks[-1]
+        if len(chunks) < args.legacy_until:
+            # OLD LOGIC: strictly match the previous behavior
+            if len(current_chunk) + len(p) < args.max_chars:
+                current_chunk += p + "\n\n"
             else:
-                current_chunk = p
+                chunks.append(current_chunk.strip())
+                current_chunk = p + "\n\n"
+        else:
+            # NEW LOGIC
+            # If we just finished legacy chunks, we might have a trailing \n\n in current_chunk
+            if current_chunk.endswith("\n\n"):
+                current_chunk = current_chunk.strip()
+
+            combined_len = len(current_chunk) + len(p) + (2 if current_chunk else 0)
+            if combined_len <= args.max_chars:
+                current_chunk += ("\n\n" if current_chunk else "") + p
+            else:
+                # Flush the current buffer first
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = ""
+                
+                # If the single paragraph itself is too large, split it sub-sectionally
+                if len(p) > args.max_chars:
+                    sub_chunks = split_large_text(p, args.max_chars, ["\n", "SENTENCE"])
+                    # Add all but the last sub-chunk directly
+                    for sc in sub_chunks[:-1]:
+                        chunks.append(sc.strip())
+                    # Keep the last sub-chunk in the buffer to potentially join with next paragraph
+                    current_chunk = sub_chunks[-1]
+                else:
+                    current_chunk = p
 
     if current_chunk: chunks.append(current_chunk.strip())
     if args.snippet is not None: chunks = chunks[:args.snippet]
