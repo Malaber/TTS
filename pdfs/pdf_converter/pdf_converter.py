@@ -90,6 +90,7 @@ def main():
     # Processing Settings
     parser.add_argument("--max_chars", type=int, default=500, help="Wait for this many chars before chunking")
     parser.add_argument("--snippet", type=int, nargs='?', const=3, help="Only process the first N chunks")
+    parser.add_argument("--export-chunks", action="store_true", help="Save the chunks to a file and exit")
 
     args = parser.parse_args()
     input_path = Path(args.input_file)
@@ -130,6 +131,17 @@ def main():
             current_chunk = p + "\n\n"
     if current_chunk: chunks.append(current_chunk.strip())
     if args.snippet is not None: chunks = chunks[:args.snippet]
+
+    if args.export_chunks:
+        chunks_file = input_path.with_suffix(".chunks.txt")
+        print(f"📝 Exporting {len(chunks)} chunks to: {chunks_file}")
+        with open(chunks_file, "w", encoding="utf-8") as f:
+            for idx, chunk in enumerate(chunks):
+                f.write(f"--- CHUNK {idx} ({len(chunk)} chars) ---\n")
+                f.write(chunk)
+                f.write("\n\n")
+        print("✅ Export complete. Exiting.")
+        sys.exit(0)
 
     # --- Step 3: Initialization ---
     model = None
