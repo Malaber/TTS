@@ -90,6 +90,7 @@ def main():
     # Processing Settings
     parser.add_argument("--max_chars", type=int, default=500, help="Wait for this many chars before chunking")
     parser.add_argument("--snippet", type=int, nargs='?', const=3, help="Only process the first N chunks")
+    parser.add_argument("--export-chunks", action="store_true", help="Save the chunks to a file and exit")
 
     args = parser.parse_args()
     input_path = Path(args.input_file)
@@ -118,18 +119,69 @@ def main():
         del doc_converter
         gc.collect()
 
-    # --- Step 2: Buffered Chunking ---
+    # --- Step 2: Improved Chunking ---
+    def split_into_sentences(text):
+        """Simple regex-based sentence splitter."""
+        # Split on . ! ? followed by space or newline
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        return [s.strip() for s in sentences if s.strip()]
+
     paragraphs = [p.strip() for p in text_to_read.split('\n\n') if p.strip()]
     chunks = []
     current_chunk = ""
+    
     for p in paragraphs:
-        if len(current_chunk) + len(p) < args.max_chars:
+        # If the whole paragraph fits, add it
+        if len(current_chunk) + len(p) + 2 <= args.max_chars:
             current_chunk += p + "\n\n"
         else:
-            chunks.append(current_chunk.strip())
-            current_chunk = p + "\n\n"
-    if current_chunk: chunks.append(current_chunk.strip())
-    if args.snippet is not None: chunks = chunks[:args.snippet]
+            # First, append what we have if it's not empty
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+            
+            # If the paragraph itself is too big, split it into sentences
+            if len(p) > args.max_chars:
+                sentences = split_into_sentences(p)
+                for s in sentences:
+                    if len(current_chunk) + len(s) + 1 <= args.max_chars:
+                        current_chunk += s + " "
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        
+                        # If a single sentence is still too long, hard-cut it (rare)
+                        if len(s) > args.max_chars:
+                            # Split by words as a fallback
+                            words = s.split()
+                            current_chunk = ""
+                            for w in words:
+                                if len(current_chunk) + len(w) + 1 <= args.max_chars:
+                                    current_chunk += w + " "
+                                else:
+                                    chunks.append(current_chunk.strip())
+                                    current_chunk = w + " "
+                        else:
+                            current_chunk = s + " "
+            else:
+                current_chunk = p + "\n\n"
+                
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    if args.snippet is not None:
+        chunks = chunks[:args.snippet]
+
+    if args.export_chunks:
+        chunks_file = input_path.with_suffix(".chunks.txt")
+        print(f"📝 Exporting {len(chunks)} chunks to: {chunks_file}")
+        with open(chunks_file, "w", encoding="utf-8") as f:
+            for idx, chunk in enumerate(chunks):
+                f.write(f"--- CHUNK {idx} ({len(chunk)} chars) ---\n")
+                f.write(chunk)
+                f.write("\n\n")
+        print("✅ Export complete. Exiting.")
+        sys.exit(0)
 
     # --- Step 3: Initialization ---
     model = None
