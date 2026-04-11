@@ -119,16 +119,79 @@ def main():
         del doc_converter
         gc.collect()
 
-    # --- Step 2: Buffered Chunking ---
+    # --- Step 2: Buffered Chunking (with sub-splitting for large blocks) ---
+    def split_large_text(text, max_chars, separators):
+        """Recursively splits a text block using a list of separators."""
+        if len(text) <= max_chars:
+            return [text]
+        if not separators:
+            # Fallback: split by words
+            words = text.split()
+            res, curr = [], ""
+            for w in words:
+                if len(curr) + len(w) + 1 <= max_chars:
+                    curr += (w + " ") if curr else w
+                else:
+                    if curr: res.append(curr)
+                    curr = w
+            if curr: res.append(curr)
+            return res
+
+        sep_type = separators[0]
+        if sep_type == "\n":
+            parts = text.split("\n")
+            joiner = "\n"
+        elif sep_type == "SENTENCE":
+            parts = re.split(r'(?<=[.!?])\s+', text)
+            joiner = " "
+        else:
+            parts = [text]
+            joiner = ""
+
+        res, curr = [], ""
+        for p in parts:
+            p = p.strip()
+            if not p: continue
+            if len(p) > max_chars:
+                if curr: res.append(curr)
+                res.extend(split_large_text(p, max_chars, separators[1:]))
+                curr = ""
+                continue
+            if not curr:
+                curr = p
+            elif len(curr) + len(p) + len(joiner) <= max_chars:
+                curr += joiner + p
+            else:
+                res.append(curr)
+                curr = p
+        if curr: res.append(curr)
+        return res
+
     paragraphs = [p.strip() for p in text_to_read.split('\n\n') if p.strip()]
     chunks = []
     current_chunk = ""
     for p in paragraphs:
-        if len(current_chunk) + len(p) < args.max_chars:
+        # Check if we can add to current_chunk (including the \n\n separator if not empty)
+        needed = len(p) + (2 if current_chunk else 0)
+        if needed <= args.max_chars:
             current_chunk += p + "\n\n"
         else:
-            chunks.append(current_chunk.strip())
-            current_chunk = p + "\n\n"
+            # Flush the current buffer first
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+            
+            # If the paragraph itself is too large, split it sub-sectionally
+            if len(p) > args.max_chars:
+                sub_chunks = split_large_text(p, args.max_chars, ["\n", "SENTENCE"])
+                # Add all but the last sub-chunk directly
+                for sc in sub_chunks[:-1]:
+                    chunks.append(sc.strip())
+                # Keep the last sub-chunk in the buffer to potentially join with next paragraph
+                current_chunk = sub_chunks[-1] + "\n\n"
+            else:
+                current_chunk = p + "\n\n"
+
     if current_chunk: chunks.append(current_chunk.strip())
     if args.snippet is not None: chunks = chunks[:args.snippet]
 
