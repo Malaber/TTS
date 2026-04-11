@@ -5,6 +5,7 @@ import re
 import gc
 import os
 import hashlib
+import subprocess
 from pathlib import Path
 
 import torch
@@ -18,9 +19,6 @@ try:
     import psutil
 except ImportError:
     psutil = None
-
-# Logic imports
-from docling.document_converter import DocumentConverter
 
 # Suppress "Setting `pad_token_id` to `eos_token_id`" warnings
 import logging
@@ -86,13 +84,58 @@ def main():
     parser.add_argument("--ref_audio", default="german_narrator.wav", help="Fixed reference voice for local mode")
     parser.add_argument("--ref_text", default="Dies ist die feste Stimme für meine Ernährungsbildungs-Präsentation. Ich erläutere ihnen hiermit die komplizierten Fakten des Lebens ganz simpel und mit etwas Witz.",
                         help="Transcription of ref_audio")
+    parser.add_argument("--no-subprocess", action="store_true", help="Run local synthesis in-process (uses more RAM)")
 
     # Processing Settings
     parser.add_argument("--max_chars", type=int, default=500, help="Wait for this many chars before chunking")
     parser.add_argument("--snippet", type=int, nargs='?', const=3, help="Only process the first N chunks")
     parser.add_argument("--export-chunks", action="store_true", help="Save the chunks to a file and exit")
 
+    # Internal Worker Settings
+    parser.add_argument("--chunk-worker", action="store_true", help="Internal: Run as a single-chunk worker")
+    parser.add_argument("--chunk-output", help="Internal: Output path for the chunk worker")
+
     args = parser.parse_args()
+
+    # --- Worker Mode Handler ---
+    if args.chunk_worker:
+        from qwen_tts import Qwen3TTSModel
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        dtype = torch.float16 if device == "mps" else torch.bfloat16
+        
+        # Suppress warnings in worker
+        logging.getLogger("transformers").setLevel(logging.ERROR)
+        transformers.logging.set_verbosity_error()
+
+        model = Qwen3TTSModel.from_pretrained(
+            args.model,
+            device_map={"": device},
+            torch_dtype=dtype,
+            attn_implementation="sdpa"
+        )
+        if hasattr(model.model, "config"):
+            model.model.config.pad_token_id = model.model.config.eos_token_id
+            
+        chunk_text = sys.stdin.read().strip()
+        if not chunk_text:
+            sys.exit(0)
+            
+        with torch.inference_mode():
+            wavs, sr = model.generate_voice_clone(
+                text=chunk_text,
+                language=args.language,
+                ref_audio=args.ref_audio,
+                ref_text=args.ref_text
+            )
+            
+        if isinstance(wavs[0], torch.Tensor):
+            data = np.array(wavs[0].detach().cpu().numpy(), copy=True)
+        else:
+            data = np.array(wavs[0], copy=True)
+            
+        sf.write(args.chunk_output, data, sr)
+        sys.exit(0)
+
     input_path = Path(args.input_file)
     md_path = input_path.with_suffix(".md")
 
@@ -107,6 +150,7 @@ def main():
         text_to_read = clean_markdown_for_tts(raw_text)
     else:
         print(f"🔍 Extracting PDF text...")
+        from docling.document_converter import DocumentConverter
         doc_converter = DocumentConverter()
         doc_result = doc_converter.convert(str(input_path))
         raw_text = doc_result.document.export_to_markdown()
@@ -217,25 +261,24 @@ def main():
         print("✅ Export complete. Exiting.")
         sys.exit(0)
 
-    # --- Step 3: Initialization ---
+    # --- Step 3: Initialization (Orchestrator Mode) ---
     model = None
     if args.mode == "local":
-        from qwen_tts import Qwen3TTSModel
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-        print(f"🚀 Loading Local Model on {device}...")
-
-        # Determine the best precision for the hardware
-        dtype = torch.float16 if device == "mps" else torch.bfloat16
-
-        model = Qwen3TTSModel.from_pretrained(
-            args.model,
-            device_map={"": device},
-            torch_dtype=dtype,  # Optimized for Apple Silicon
-            attn_implementation="sdpa"  # Enforce PyTorch native attention!
-        )
-        # Suppress "Setting `pad_token_id` to `eos_token_id`" warning
-        if hasattr(model.model, "config"):
-            model.model.config.pad_token_id = model.model.config.eos_token_id
+        if args.no_subprocess:
+            from qwen_tts import Qwen3TTSModel
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+            print(f"🚀 Loading Local Model on {device} (In-Process)...")
+            dtype = torch.float16 if device == "mps" else torch.bfloat16
+            model = Qwen3TTSModel.from_pretrained(
+                args.model,
+                device_map={"": device},
+                torch_dtype=dtype,
+                attn_implementation="sdpa"
+            )
+            if hasattr(model.model, "config"):
+                model.model.config.pad_token_id = model.model.config.eos_token_id
+        else:
+            print(f"🚀 Using Subprocess Synthesis to manage RAM.")
     else:
         print(f"🌐 Using API at {args.url}...")
 
@@ -284,24 +327,20 @@ def main():
                         print(f"\nAPI Error on chunk {i}. Skipping...")
                         continue
                 else:
-                    # 🛑 CRITICAL FIX: Tell PyTorch NOT to track gradients/memory history!
-                    with torch.inference_mode():
-                        wavs, sr = model.generate_voice_clone(
-                            text=chunk_text,
-                            language=args.language,
-                            ref_audio=args.ref_audio,
-                            ref_text=args.ref_text
-                        )
-                    
-                    # Detach from any residual graphs and convert to CPU/Numpy immediately
-                    # We use copy=True to ensure we don't hold a "view" of any GPU tensors
-                    if isinstance(wavs[0], torch.Tensor):
-                        data = np.array(wavs[0].detach().cpu().numpy(), copy=True)
-                    else:
-                        data = np.array(wavs[0], copy=True)
-                
-                # Save this newly generated snippet to the cache for future runs
-                sf.write(chunk_file_path, data, sr)
+                    # ⚙️ SUBPROCESS WORKER: Call ourselves to process this single chunk
+                    cmd = [
+                        sys.executable, __file__, str(input_path),
+                        "--mode", "local",
+                        "--model", args.model,
+                        "--ref_audio", args.ref_audio,
+                        "--ref_text", args.ref_text,
+                        "--language", args.language,
+                        "--chunk-worker",
+                        "--chunk-output", str(chunk_file_path)
+                    ]
+                    # Pass chunk text via stdin to avoid shell limits
+                    subprocess.run(cmd, input=chunk_text.encode('utf-8'), check=True, capture_output=True)
+                    data, sr = sf.read(chunk_file_path)
 
             # --- 2. Stream to Final Master File ---
             if first_chunk:
@@ -314,27 +353,23 @@ def main():
                 # On later chunks, just write data (metadata is already set)
                 output_file.write(data)
 
-            # --- 3. AGGRESSIVE RAM Cleanup ---
-            # Delete EVERYTHING heavy from this specific loop iteration
-            if 'wavs' in locals():
-                del wavs
+            # --- 3. Clean up Orchestrator Memory ---
             if 'data' in locals():
                 del data
             
-            # 🛑 CRITICAL: If the model is keeping an internal context/history, clear it!
-            if hasattr(model, "reset_cache"):
-                model.reset_cache()
-            elif hasattr(model, "model") and hasattr(model.model, "reset_cache"):
-                model.model.reset_cache()
-            
             # Force Python to destroy unreferenced objects NOW
             gc.collect()
-            
-            # NOW tell Apple Silicon to release that destroyed memory back to the OS
-            if args.mode == "local" and torch.backends.mps.is_available():
-                # Synchronize ensures the GPU is actually DONE before we try to clear
-                torch.mps.synchronize()
-                torch.mps.empty_cache()
+
+        if output_file:
+            output_file.close()
+            print(f"✨ Success! Master audio saved to: {audio_output}")
+            print(f"💾 Individual snippets preserved in: {cache_dir}")
+
+    except Exception as e:
+        if output_file: output_file.close()
+        print(f"\nPipeline failed: {e}")
+        print("Don't worry, your progress is saved in the cache directory. Just run the script again!")
+        sys.exit(1)
 
         if output_file:
             output_file.close()
