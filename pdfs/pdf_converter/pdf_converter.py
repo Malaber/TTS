@@ -171,26 +171,26 @@ def main():
     chunks = []
     current_chunk = ""
     for p in paragraphs:
-        # Check if we can add to current_chunk (including the \n\n separator if not empty)
-        needed = len(p) + (2 if current_chunk else 0)
-        if needed <= args.max_chars:
-            current_chunk += p + "\n\n"
+        # Correctly check if the COMBINED length fits the limit
+        combined_len = len(current_chunk) + len(p) + (2 if current_chunk else 0)
+        if combined_len <= args.max_chars:
+            current_chunk += ("\n\n" if current_chunk else "") + p
         else:
             # Flush the current buffer first
             if current_chunk:
                 chunks.append(current_chunk.strip())
                 current_chunk = ""
             
-            # If the paragraph itself is too large, split it sub-sectionally
+            # If the single paragraph itself is too large, split it sub-sectionally
             if len(p) > args.max_chars:
                 sub_chunks = split_large_text(p, args.max_chars, ["\n", "SENTENCE"])
                 # Add all but the last sub-chunk directly
                 for sc in sub_chunks[:-1]:
                     chunks.append(sc.strip())
                 # Keep the last sub-chunk in the buffer to potentially join with next paragraph
-                current_chunk = sub_chunks[-1] + "\n\n"
+                current_chunk = sub_chunks[-1]
             else:
-                current_chunk = p + "\n\n"
+                current_chunk = p
 
     if current_chunk: chunks.append(current_chunk.strip())
     if args.snippet is not None: chunks = chunks[:args.snippet]
@@ -198,11 +198,22 @@ def main():
     if args.export_chunks:
         chunks_file = input_path.with_suffix(".chunks.txt")
         print(f"📝 Exporting {len(chunks)} chunks to: {chunks_file}")
+        oversized = []
+        limit_buffer = args.max_chars * 1.1
         with open(chunks_file, "w", encoding="utf-8") as f:
             for idx, chunk in enumerate(chunks):
-                f.write(f"--- CHUNK {idx} ({len(chunk)} chars) ---\n")
+                chunk_len = len(chunk)
+                f.write(f"--- CHUNK {idx} ({chunk_len} chars) ---\n")
                 f.write(chunk)
                 f.write("\n\n")
+                if chunk_len > limit_buffer:
+                    oversized.append((idx, chunk_len))
+        
+        if oversized:
+            print(f"⚠️  WARNING: {len(oversized)} chunks exceed the 10% buffer ({int(limit_buffer)} chars):")
+            for idx, length in oversized:
+                print(f"   - Chunk {idx}: {length} chars")
+        
         print("✅ Export complete. Exiting.")
         sys.exit(0)
 
